@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package test;
+
+import "errors/options.proto";
+
+option go_package = "example.com/test/errorspb";
+
+// ApplicationError is a top-level error. It can be one of multiple types of errors.
+message ApplicationError {
+  oneof kind {
+    // A configuration error.
+    ConfigError config = 1;
+    // An I/O error.
+    IOError io = 2;
+    // Any other type of error (perfect for internal server errors).
+    OtherError other = 3;
+  }
+}
+
+message ConfigError {
+  // Format of the error message returned by Error().
+  option (errors.display) = "invalid config: {key}={value}";
+
+  // These two fields will be displayed in the error message.
+  string key = 1;
+  string value = 2;
+
+  // This field will not be displayed in the error message, but it can be unwrapped and introspected.
+  string message = 3;
+}
+
+message IOError {
+  // Format of the error message returned by Error().
+  option (errors.display) = "could not read {path}: {cause}";
+
+  string path = 1;
+
+  // Embedded error types can be unwrapped with Unwrap().
+  NotFoundError cause = 2;
+}
+
+message NotFoundError {
+  // Format of the error message returned by Error().
+  option (errors.display) = "not found: {entity}";
+
+  string entity = 1;
+}
+
+message OtherError {
+  // Format of the error message returned by Error().
+  option (errors.display) = "{message}";
+
+  string message = 1;
+}
+
+// Code generation should not touch this message since it is not an error message (i.e, doesn't end with "Error").
+message NormalMessage {
+  string name = 1;
+}

@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package errors;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/varunbpatil/protoc-gen-go-errors/proto/errors";
+
+extend google.protobuf.MessageOptions {
+  string display = 51234;
+}
