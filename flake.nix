@@ -1,73 +1,93 @@
 {
-  description = "A basic gomod2nix flake";
+  description = "protoc-gen-go-errors";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  inputs.flake-utils.url = "github:numtide/flake-utils";
-  inputs.gomod2nix.url = "github:nix-community/gomod2nix";
-  inputs.gomod2nix.inputs.nixpkgs.follows = "nixpkgs";
-  inputs.gomod2nix.inputs.flake-utils.follows = "flake-utils";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
+    gitignore = {
+      url = "github:hercules-ci/gitignore.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
 
-  outputs =
-    { self
-    , nixpkgs
-    , flake-utils
-    , gomod2nix
-    ,
-    }:
-    (flake-utils.lib.eachDefaultSystem (
-      system:
-      let
-        pkgs = nixpkgs.legacyPackages.${system};
+  outputs = { self, nixpkgs, nixpkgs-unstable, gitignore }:
+    let
+      allSystems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+      forAllSystems = f: nixpkgs.lib.genAttrs allSystems (system: f {
+        inherit system;
+        pkgs =
+          let
+            pkgs-unstable = import nixpkgs-unstable { inherit system; };
+          in
+          import nixpkgs {
+            inherit system;
+            overlays = [
+              (final: prev: {
+                gopls = pkgs-unstable.gopls;
+              })
+            ];
+          };
+      });
+    in
+    {
+      packages = forAllSystems ({ pkgs, ... }:
+        rec {
+          default = protoc-gen-go-errors;
 
-        # The current default sdk for macOS fails to compile go projects, so we use a newer one for now.
-        # This has no effect on other platforms.
-        callPackage = pkgs.darwin.apple-sdk.callPackage or pkgs.callPackage;
-        # Simple test check added to nix flake check
-        go-test = pkgs.stdenvNoCC.mkDerivation {
-          name = "go-test";
-          dontBuild = true;
-          src = ./.;
-          doCheck = true;
-          nativeBuildInputs = with pkgs; [
+          protoc-gen-go-errors = pkgs.buildGoModule {
+            pname = "protoc-gen-go-errors";
+            version = "0.1.0";
+
+            src = gitignore.lib.gitignoreSource ./.;
+
+            vendorHash = "sha256-+y5WBX89XcRPHHfX3Eiie97QydC3t2mjpkf6lDczBWo=";
+
+            subPackages = [ "." ];
+
+            ldflags = [
+              "-s"
+              "-w"
+              "-extldflags=-static"
+            ];
+
+            env.CGO_ENABLED = "0";
+
+            meta = with pkgs.lib; {
+              description = "Protocol Buffer compiler plugin for generating Go error types";
+              homepage = "https://github.com/varunbpatil/protoc-gen-go-errors";
+              license = licenses.mit;
+              maintainers = [ maintainers.varunbpatil ];
+              platforms = platforms.unix;
+            };
+          };
+        });
+
+      devShells = forAllSystems ({ pkgs, ... }: {
+        default = pkgs.mkShell {
+          buildInputs = with pkgs; [
             go
-            writableTmpDirAsHomeHook
-          ];
-          checkPhase = ''
-            go test -v ./...
-          '';
-          installPhase = ''
-            mkdir "$out"
-          '';
-        };
-        # Simple lint check added to nix flake check
-        go-lint = pkgs.stdenvNoCC.mkDerivation {
-          name = "go-lint";
-          dontBuild = true;
-          src = ./.;
-          doCheck = true;
-          nativeBuildInputs = with pkgs; [
             golangci-lint
-            go
-            writableTmpDirAsHomeHook
+            gopls
+            protobuf
+            protoc-gen-go
+            buf
           ];
-          checkPhase = ''
-            golangci-lint run
+
+          shellHook = ''
+            echo "Development environment for protoc-gen-go-errors"
+            echo "Go version: $(go version)"
+            echo "Protobuf version: $(protoc --version)"
           '';
-          installPhase = ''
-            mkdir "$out"
-          '';
         };
-      in
-      {
-        checks = {
-          inherit go-test go-lint;
-        };
-        packages.default = callPackage ./. {
-          inherit (gomod2nix.legacyPackages.${system}) buildGoApplication;
-        };
-        devShells.default = callPackage ./shell.nix {
-          inherit (gomod2nix.legacyPackages.${system}) mkGoEnv gomod2nix;
-        };
-      }
-    ));
+      });
+
+      overlays.default = final: prev: {
+        protoc-gen-go-errors = self.packages.${final.system}.protoc-gen-go-errors;
+      };
+    };
 }

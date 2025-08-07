@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package errors;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/varunbpatil/protoc-gen-go-errors/errors";
+
+// This file defines custom options for error generation.
+// Users can import this file and change the `go_package` to match their package structure.
+
+// Extension for specifying the display format of an error message.
+// The display format supports field interpolation using {field_name} syntax.
+//
+// Example:
+//   message MyError {
+//     option (errors.display) = "invalid value: {field}";
+//     string field = 1;
+//   }
+extend google.protobuf.MessageOptions {
+  string display = 51234;
+}

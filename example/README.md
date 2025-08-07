@@ -5,11 +5,11 @@ to generate Go error types from protobuf.
 ## Prerequisites
 You need to have [buf](https://buf.build/docs/cli/installation/),
 [protoc-gen-go](https://grpc.io/docs/languages/go/quickstart/)
-and protoc-gen-go-errors` installed in your `PATH`.
+and `protoc-gen-go-errors` installed in your `PATH`.
 
 To install `protoc-gen-go-errors`, you can run:
 ```sh
-go install github.com/varunbpatil/protoc-gen-go-errors/cmd/protoc-gen-go-errors@latest
+go install github.com/varunbpatil/protoc-gen-go-errors@latest
 ```
 
 You also need to manually download [options.proto](../proto/errors/options.proto)
