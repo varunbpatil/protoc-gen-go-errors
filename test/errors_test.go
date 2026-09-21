@@ -1,6 +1,7 @@
 package errors_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -56,7 +57,7 @@ func TestApplicationErrorIOError(t *testing.T) {
 	// Unwrap the not found error from the I/O error.
 	var nErrUnwrapped *errorspb.NotFoundError
 	require.ErrorAs(t, iErr, &nErrUnwrapped)
-	require.Equal(t, &iErr.Cause, &nErrUnwrapped)
+	require.Equal(t, iErr.Cause, nErrUnwrapped)
 
 	// No further errors to unwrap.
 	require.Nil(t, nErrUnwrapped.Unwrap())
@@ -82,4 +83,22 @@ func TestApplicationErrorOtherError(t *testing.T) {
 
 	// No further errors to unwrap.
 	require.Nil(t, oErrUnwrapped.Unwrap())
+}
+
+func TestUnwrapNilCause(t *testing.T) {
+	t.Parallel()
+
+	// An I/O error without a cause must not unwrap to a typed-nil error.
+	iErr := &errorspb.IOError{Path: "file.txt"}
+	require.Nil(t, iErr.Unwrap())
+
+	var nErr *errorspb.NotFoundError
+	require.False(t, errors.As(iErr, &nErr))
+
+	// An application error without a kind must not unwrap either.
+	aErr := &errorspb.ApplicationError{}
+	require.Nil(t, aErr.Unwrap())
+
+	var iErrUnwrapped *errorspb.IOError
+	require.False(t, errors.As(aErr, &iErrUnwrapped))
 }

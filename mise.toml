@@ -1,0 +1,29 @@
+[tools]
+go = "1.27.1"
+buf = "1.72.0"
+protoc-gen-go = "1.36.12"
+golangci-lint = "2.13.2"
+
+[env]
+_.path = ["./example/bin"]
+
+[tasks.build]
+description = "Build the protoc-gen-go-errors plugin into example/bin"
+run = "go build -o example/bin/protoc-gen-go-errors ."
+
+[tasks.generate]
+description = "Regenerate all checked-in Go code with buf"
+depends = ["build"]
+run = "bash -c 'for d in protos test example; do (cd \"$d\" && buf generate) || exit 1; done'"
+
+[tasks.test]
+description = "Run all Go tests (root module and example module)"
+run = "bash -c 'go test ./... && (cd example && go test ./...)'"
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run ./..."
+
+[tasks.publish]
+description = "Push the protos module to the BSR. One-time setup: 'buf registry organization create buf.build/varunbpatil-oss' and 'buf registry module create buf.build/varunbpatil-oss/protoc-gen-go-errors --visibility public'. Usage: mise run publish -- <label> (label optional, e.g. v0.1.0)"
+run = "sh -c 'if [ -n \"${1:-}\" ]; then exec buf push --exclude-unnamed --label \"$1\"; else exec buf push --exclude-unnamed; fi' --"

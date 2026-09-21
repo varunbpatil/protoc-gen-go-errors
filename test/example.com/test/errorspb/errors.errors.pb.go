@@ -19,14 +19,19 @@ func (e *ApplicationError) Error() string {
 func (e *ApplicationError) Unwrap() error {
 	switch v := e.Kind.(type) {
 	case *ApplicationError_Config:
-		return v.Config
+		if v.Config != nil {
+			return v.Config
+		}
 	case *ApplicationError_Io:
-		return v.Io
+		if v.Io != nil {
+			return v.Io
+		}
 	case *ApplicationError_Other:
-		return v.Other
-	default:
-		return nil
+		if v.Other != nil {
+			return v.Other
+		}
 	}
+	return nil
 }
 
 func (e *ApplicationError) FromConfigError(leaf *ConfigError) *ApplicationError {
@@ -60,7 +65,10 @@ func (e *IOError) Error() string {
 }
 
 func (e *IOError) Unwrap() error {
-	return e.GetCause()
+	if v := e.GetCause(); v != nil {
+		return v
+	}
+	return nil
 }
 
 func (e *NotFoundError) Error() string {

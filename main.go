@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -14,6 +15,16 @@ import (
 
 const (
 	errorSuffix = "Error"
+)
+
+// placeholderRE matches {field_name} references in an (errors.display) format.
+var placeholderRE = regexp.MustCompile(`{([a-zA-Z0-9_]+)}`)
+
+// Templates are parsed once at startup rather than per message.
+var (
+	headerTmpl = template.Must(template.New("header").Parse(fileHeaderTemplate))
+	leafTmpl   = template.Must(template.New("leaf").Parse(leafErrorTemplate))
+	sumTmpl    = template.Must(template.New("sum").Parse(sumErrorTemplate))
 )
 
 func main() {
@@ -45,7 +56,7 @@ func (m *errorsModule) Execute(targets map[string]pgs.File, packages map[string]
 	for _, file := range targets {
 		m.processFile(file)
 	}
-	return m.ModuleBase.Artifacts()
+	return m.Artifacts()
 }
 
 func (m *errorsModule) processFile(file pgs.File) {
@@ -72,35 +83,47 @@ func (m *errorsModule) processFile(file pgs.File) {
 	// Generate file content
 	content := m.generateFileContent(file, errorMessages)
 
-	m.ModuleBase.AddGeneratorFile(filename.String(), content)
+	m.AddGeneratorFile(filename.String(), content)
 }
 
 func (m *errorsModule) generateFileContent(file pgs.File, errorMessages []pgs.Message) string {
 	var content strings.Builder
 
+	// Only leaf errors use fmt, so a file containing nothing but sum errors must
+	// not import it.
+	usesFmt := false
+	for _, msg := range errorMessages {
+		if m.isLeafError(msg) {
+			usesFmt = true
+			break
+		}
+	}
+
 	// File header
 	headerData := struct {
 		PackageName string
+		UsesFmt     bool
 	}{
 		PackageName: m.ctx.PackageName(file).String(),
+		UsesFmt:     usesFmt,
 	}
 
-	headerTmpl := template.Must(template.New("header").Parse(fileHeaderTemplate))
 	if err := headerTmpl.Execute(&content, headerData); err != nil {
-		m.ModuleBase.Failf("Failed to execute header template: %v", err)
+		m.Failf("Failed to execute header template: %v", err)
 	}
 
 	// Generate methods for each error message
 	for _, msg := range errorMessages {
 		if m.isLeafError(msg) {
 			m.generateLeafError(&content, msg)
-		} else {
-			oneofs := msg.OneOfs()
-			if len(oneofs) > 1 {
-				m.ModuleBase.Failf("Multiple oneofs not allowed in message %s", msg.Name())
-			}
-			m.generateSumError(&content, msg, oneofs[0])
+			continue
 		}
+
+		oneofs := msg.OneOfs()
+		if len(oneofs) != 1 {
+			m.Failf("message %s must contain exactly one oneof, found %d", msg.Name(), len(oneofs))
+		}
+		m.generateSumError(&content, msg, oneofs[0])
 	}
 
 	return content.String()
@@ -109,25 +132,23 @@ func (m *errorsModule) generateFileContent(file pgs.File, errorMessages []pgs.Me
 func (m *errorsModule) generateLeafError(content *strings.Builder, msg pgs.Message) {
 	displayFormat, ok := m.getDisplayFormat(msg)
 	if !ok {
-		m.ModuleBase.Failf("Missing (errors.display) option in message %s", msg.Name())
+		m.Failf("Missing (errors.display) option in message %s", msg.Name())
 	}
 
 	m.validateFieldReferencesOrFail(msg, displayFormat)
 
 	leafData := m.buildLeafErrorData(msg, displayFormat)
 
-	leafTmpl := template.Must(template.New("leaf").Parse(leafErrorTemplate))
 	if err := leafTmpl.Execute(content, leafData); err != nil {
-		m.ModuleBase.Failf("Failed to execute leaf error template for %s: %v", msg.Name(), err)
+		m.Failf("Failed to execute leaf error template for %s: %v", msg.Name(), err)
 	}
 }
 
 func (m *errorsModule) generateSumError(content *strings.Builder, msg pgs.Message, oneof pgs.OneOf) {
 	sumData := m.buildSumErrorData(msg, oneof)
 
-	sumTmpl := template.Must(template.New("sum").Parse(sumErrorTemplate))
 	if err := sumTmpl.Execute(content, sumData); err != nil {
-		m.ModuleBase.Failf("Failed to execute sum error template for %s: %v", msg.Name(), err)
+		m.Failf("Failed to execute sum error template for %s: %v", msg.Name(), err)
 	}
 }
 
@@ -159,7 +180,6 @@ type MessageData struct {
 
 func (m *errorsModule) buildLeafErrorData(msg pgs.Message, displayFormat string) LeafErrorData {
 	formatArgs := m.buildFieldArgs(msg, displayFormat)
-	convertedFormat := m.convertToFmtPrintf(displayFormat, msg)
 	unwrappableField := m.findUnwrappableField(msg, displayFormat)
 
 	var unwrappableFieldData *FieldData
@@ -170,8 +190,10 @@ func (m *errorsModule) buildLeafErrorData(msg pgs.Message, displayFormat string)
 	}
 
 	return LeafErrorData{
-		GoName:           m.ctx.Name(msg).String(),
-		DisplayFormat:    convertedFormat,
+		GoName: m.ctx.Name(msg).String(),
+		// DisplayFormat is rendered as a quoted Go string literal with the
+		// field references converted to fmt verbs.
+		DisplayFormat:    strconv.Quote(toPrintfFormat(displayFormat)),
 		FormatArgs:       formatArgs,
 		UnwrappableField: unwrappableFieldData,
 	}
@@ -180,18 +202,20 @@ func (m *errorsModule) buildLeafErrorData(msg pgs.Message, displayFormat string)
 func (m *errorsModule) buildSumErrorData(msg pgs.Message, oneof pgs.OneOf) SumErrorData {
 	var fields []FieldData
 	for _, field := range oneof.Fields() {
-		fieldData := FieldData{
-			GoName: m.ctx.Name(field).String(),
+		msgType := field.Type().Embed()
+		if msgType == nil {
+			m.Failf("oneof field %s in message %s must reference an error message", field.Name(), msg.Name())
 		}
-		// For oneof fields, check if they reference a message
-		if field.Type().ProtoType() == pgs.MessageT || field.Type().IsEmbed() {
-			if msgType := field.Type().Embed(); msgType != nil {
-				fieldData.Message = &MessageData{
-					GoName: m.ctx.Name(msgType).String(),
-				}
-			}
+		if !strings.HasSuffix(m.ctx.Name(msgType).String(), errorSuffix) {
+			m.Failf(
+				"oneof field %s in message %s must reference a message whose name ends with %q",
+				field.Name(), msg.Name(), errorSuffix,
+			)
 		}
-		fields = append(fields, fieldData)
+		fields = append(fields, FieldData{
+			GoName:  m.ctx.Name(field).String(),
+			Message: &MessageData{GoName: m.ctx.Name(msgType).String()},
+		})
 	}
 
 	return SumErrorData{
@@ -234,38 +258,21 @@ func (m *errorsModule) getDisplayFormat(msg pgs.Message) (string, bool) {
 }
 
 func (m *errorsModule) validateFieldReferencesOrFail(msg pgs.Message, display string) {
-	refs := m.referencedFields(display)
 	defined := map[string]bool{}
-
 	for _, field := range msg.Fields() {
 		defined[field.Name().String()] = true
 	}
 
-	for name := range refs {
+	for _, name := range placeholderNames(display) {
 		if !defined[name] {
-			m.ModuleBase.Failf("Field {%s} in (errors.display) not found in message %s", name, msg.Name())
+			m.Failf("Field {%s} in (errors.display) not found in message %s", name, msg.Name())
 		}
 	}
-}
-
-func (m *errorsModule) convertToFmtPrintf(format string, msg pgs.Message) string {
-	refs := m.referencedFields(format)
-	for _, field := range msg.Fields() {
-		name := field.Name().String()
-		if refs[name] {
-			format = strings.ReplaceAll(format, "{"+name+"}", "%v")
-		}
-	}
-	return format
 }
 
 func (m *errorsModule) buildFieldArgs(msg pgs.Message, displayFormat string) []string {
-	re := regexp.MustCompile(`{([a-zA-Z0-9_]+)}`)
-	matches := re.FindAllStringSubmatch(displayFormat, -1)
-
 	var args []string
-	for _, match := range matches {
-		name := match[1]
+	for _, name := range placeholderNames(displayFormat) {
 		found := false
 		for _, field := range msg.Fields() {
 			if field.Name().String() == name {
@@ -275,7 +282,7 @@ func (m *errorsModule) buildFieldArgs(msg pgs.Message, displayFormat string) []s
 			}
 		}
 		if !found {
-			m.ModuleBase.Failf("field {%s} referenced in display format not found in message %s", name, msg.Name())
+			m.Failf("field {%s} referenced in display format not found in message %s", name, msg.Name())
 		}
 	}
 
@@ -283,14 +290,9 @@ func (m *errorsModule) buildFieldArgs(msg pgs.Message, displayFormat string) []s
 }
 
 func (m *errorsModule) referencedFields(format string) map[string]bool {
-	re := regexp.MustCompile(`{([a-zA-Z0-9_]+)}`)
-	matches := re.FindAllStringSubmatch(format, -1)
-
 	refFields := map[string]bool{}
-	for _, match := range matches {
-		if len(match) > 1 {
-			refFields[match[1]] = true
-		}
+	for _, name := range placeholderNames(format) {
+		refFields[name] = true
 	}
 	return refFields
 }
@@ -313,7 +315,7 @@ func (m *errorsModule) findUnwrappableField(msg pgs.Message, displayFormat strin
 		for _, f := range unwrappables {
 			names = append(names, f.Name().String())
 		}
-		m.ModuleBase.Failf("only one unwrappable field allowed in message %s, found: %v", msg.Name(), names)
+		m.Failf("only one unwrappable field allowed in message %s, found: %v", msg.Name(), names)
 	}
 
 	if len(unwrappables) == 1 {
@@ -331,25 +333,47 @@ func (m *errorsModule) hasDisplayOption(entity pgs.Entity) bool {
 	return false
 }
 
+// placeholderNames returns the field names referenced by {field_name}
+// placeholders in a display format, in order of appearance.
+func placeholderNames(format string) []string {
+	matches := placeholderRE.FindAllStringSubmatch(format, -1)
+	names := make([]string, 0, len(matches))
+	for _, match := range matches {
+		names = append(names, match[1])
+	}
+	return names
+}
+
+// toPrintfFormat converts an (errors.display) format into a fmt format string.
+// Literal percent signs are escaped so that only the substituted field verbs
+// are interpreted by fmt.
+func toPrintfFormat(format string) string {
+	format = strings.ReplaceAll(format, "%", "%%")
+	return placeholderRE.ReplaceAllString(format, "%v")
+}
+
 // Templates
 const fileHeaderTemplate = `
 // Code generated by protoc-gen-go-errors. DO NOT EDIT.
 package {{ .PackageName }}
+{{- if .UsesFmt }}
 
 import "fmt"
+{{- end }}
 `
 
 const leafErrorTemplate = `
 func (e *{{ .GoName }}) Error() string {
-	return fmt.Sprintf("{{ .DisplayFormat }}", {{ range $i, $arg := .FormatArgs }}{{if $i}}, {{end}}{{ $arg }}{{end}})
+	return fmt.Sprintf({{ .DisplayFormat }}, {{ range $i, $arg := .FormatArgs }}{{if $i}}, {{end}}{{ $arg }}{{end}})
 }
 
 func (e *{{ .GoName }}) Unwrap() error {
 	{{- if .UnwrappableField }}
-	return e.Get{{ .UnwrappableField.GoName }}()
-	{{- else }}
-	return nil
+	if v := e.Get{{ .UnwrappableField.GoName }}(); v != nil {
+		return v
+	}
 	{{- end }}
+	return nil
 }
 `
 
@@ -369,11 +393,12 @@ func (e *{{ .GoName }}) Unwrap() error {
 	switch v := e.{{ .Oneof.GoName }}.(type) {
 	{{- range $field := .Oneof.Fields }}
 	case *{{ $.GoName }}_{{ $field.GoName }}:
-		return v.{{ $field.GoName }}
+		if v.{{ $field.GoName }} != nil {
+			return v.{{ $field.GoName }}
+		}
 	{{- end }}
-	default:
-		return nil
 	}
+	return nil
 }
 
 {{- range $field := .Oneof.Fields }}

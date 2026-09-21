@@ -1,0 +1,12 @@
+version: v2
+plugins:
+  # paths=import + module= strip the go_package prefix so the generated
+  # options.pb.go lands at errors/options.pb.go (the Go package is
+  # github.com/varunbpatil/protoc-gen-go-errors/errors).
+  - local: protoc-gen-go
+    out: ..
+    opt:
+      - paths=import
+      - module=github.com/varunbpatil/protoc-gen-go-errors
+inputs:
+  - directory: .

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -56,7 +57,7 @@ func TestApplicationErrorIOError(t *testing.T) {
 	// Unwrap the not found error from the I/O error.
 	var nErrUnwrapped *app.NotFoundError
 	require.ErrorAs(t, iErr, &nErrUnwrapped)
-	require.Equal(t, &iErr.Cause, &nErrUnwrapped)
+	require.Equal(t, iErr.Cause, nErrUnwrapped)
 
 	// No further errors to unwrap.
 	require.Nil(t, nErrUnwrapped.Unwrap())
@@ -82,4 +83,35 @@ func TestApplicationErrorOtherError(t *testing.T) {
 
 	// No further errors to unwrap.
 	require.Nil(t, oErrUnwrapped.Unwrap())
+}
+
+func TestErrorDisplayEscaping(t *testing.T) {
+	t.Parallel()
+
+	// A literal '%' in the display format must not be treated as a verb.
+	pErr := &app.PercentError{Item: "apples"}
+	require.Equal(t, "50% off apples", pErr.Error())
+
+	// Quotes in the display format must survive code generation.
+	qErr := &app.QuotedError{Quote: "hi"}
+	require.Equal(t, `he said "hi"`, qErr.Error())
+}
+
+func TestUnwrapNilCause(t *testing.T) {
+	t.Parallel()
+
+	// An I/O error without a cause must not unwrap to a typed-nil error.
+	iErr := &app.IOError{Path: "file.txt"}
+	require.Nil(t, iErr.Unwrap())
+
+	var nErr *app.NotFoundError
+	require.False(t, errors.As(iErr, &nErr))
+
+	// An application error without a kind must not unwrap either.
+	aErr := &app.ApplicationError{}
+	require.Nil(t, aErr.Unwrap())
+
+	// Nor must one that wraps a nil leaf.
+	aErr = &app.ApplicationError{Kind: &app.ApplicationError_Config{}}
+	require.Nil(t, aErr.Unwrap())
 }

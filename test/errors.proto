@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package test;
 
-import "errors/options.proto";
+import "protoc-gen-go-errors/options.proto";
 
 option go_package = "example.com/test/errorspb";
 

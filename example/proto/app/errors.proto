@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package test;
+package protoexample;
 
-import "errors/options.proto";
+import "protoc-gen-go-errors/options.proto";
 
 option go_package = "example.com/test/gen/app";
 
@@ -52,6 +52,20 @@ message OtherError {
   option (errors.display) = "{message}";
 
   string message = 1;
+}
+
+message PercentError {
+  // A literal percent sign must not be interpreted as a format verb.
+  option (errors.display) = "50% off {item}";
+
+  string item = 1;
+}
+
+message QuotedError {
+  // Quotes in the display format must be escaped in the generated code.
+  option (errors.display) = "he said \"{quote}\"";
+
+  string quote = 1;
 }
 
 // Code generation should not touch this message since it is not an error message (i.e, doesn't end with "Error").

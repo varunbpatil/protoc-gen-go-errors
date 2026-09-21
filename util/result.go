@@ -31,7 +31,7 @@ func (r Result[T, E]) IsErr() bool {
 }
 
 func (r Result[T, E]) Get() (T, E) {
-	return empty[T](), r.err
+	return r.value, r.err
 }
 
 func (r Result[T, E]) MustGet() T {
@@ -54,8 +54,4 @@ func (r Result[T, E]) OrEmpty() T {
 
 func (r Result[T, E]) Err() E {
 	return r.err
-}
-
-func empty[T any]() (t T) {
-	return
 }

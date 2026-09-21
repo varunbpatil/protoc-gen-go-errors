@@ -2,7 +2,7 @@
 
 ## What is it?
 A protoc plugin to generate idiomatic Go error types inspired by [thiserror](https://docs.rs/thiserror/latest/thiserror/).
-Also includes an optional Result type inspired by Rust's [Result](https://doc.rust-lang.org/std/result/enum.Result.html).
+Also includes an optional `Result` type (see [`util`](util/)) inspired by Rust's [Result](https://doc.rust-lang.org/std/result/enum.Result.html).
 
 ## Why?
 You've probably written code like this:
@@ -67,7 +67,7 @@ func (db *DB) CreateUser(ctx context.Context, r *CreateUserRequest) (*CreateUser
 
 +    // Check preconditions.
 +    if err := checkPreconditions(); err != nil {
-+        return errors.New("user cannot be created because preconditions were not satisfied. %w", err)
++        return fmt.Errorf("user cannot be created because preconditions were not satisfied: %w", err)
 +    }
 }
 ```
@@ -76,7 +76,7 @@ Now, a bunch of clients are unhappy because they received a generic "something w
 of an error telling them that some preconditions were not satisfied.
 
 ## Is there a better way?
-What if you could write code this this:
+What if you could write code like this:
 ```diff
 type UserRepository interface {
 -    CreateUser(ctx context.Context, r *CreateUserRequest) (*CreateUserResponse, error)
@@ -122,7 +122,7 @@ func (s *UserService) CreateUser(ctx context.Context, r *userpb.CreateUserReques
 
 +    resp := s.repo.CreateUser(ctx, &CreateUserRequest{...})
 +    if resp.IsErr() {
-+        switch v := e.Kind.(type) {
++        switch v := resp.Err().Kind.(type) {
 +            case *UserRepositoryError_Invalid:
 +                return nil, status.Error(codes.InvalidArgument, v.Invalid.Error())
 +            case *UserRepositoryError_AlreadyExists:
@@ -133,6 +133,8 @@ func (s *UserService) CreateUser(ctx context.Context, r *userpb.CreateUserReques
 +                return nil, status.Error(codes.Internal, v.Other.Error())
 +        }
 +    }
+
++    return resp.MustGet(), nil
 }
 ```
 
@@ -143,15 +145,15 @@ func (db *DB) CreateUser(ctx context.Context, r *CreateUserRequest) Result[*Crea
 
     // Check preconditions.
     if err := checkPreconditions(); err != nil {
--        return errors.New("user cannot be created because preconditions were not satisfied. %w", err)
-+        return Result[*CreateUserResponse].Err(
-+            new(userpb.UserRepositoryError).From(err),
+-        return fmt.Errorf("user cannot be created because preconditions were not satisfied: %w", err)
++        return util.Err[*CreateUserResponse](
++            new(userpb.UserRepositoryError).FromDependenciesNotMetError(err),
 +        )
     }
 
 +    // All good. Return the response.
-+    return Result[*CreateUserResponse, *userpb.UserRepositoryError].Ok(
-+        &CreateUserReponse{...}
++    return util.Ok[*CreateUserResponse, *userpb.UserRepositoryError](
++        &CreateUserResponse{...},
 +    )
 }
 
@@ -169,7 +171,56 @@ protoc plugin are still valid and idiomatic Go errors and you can use them anywh
 
 ## How do you define errors?
 > [!NOTE]  
-> Only messages that end with the string "Error" are considered as errors by the `protoc-gen-go-errors` plugin.
+> Only messages whose Go name ends with the string "Error" are considered as errors by the `protoc-gen-go-errors` plugin.
+> Leaf errors must also set the `(errors.display)` option; code generation fails otherwise.
+
+The `(errors.display)` extension is defined once in
+[`protos/protoc-gen-go-errors/options.proto`](protos/protoc-gen-go-errors/options.proto).
+It uses extension tag `51234`, which is currently fixed and cannot be changed.
+
+### In this repository
+
+All protos in this repo import `options.proto`
+(`import "protoc-gen-go-errors/options.proto"`) via the buf workspace defined
+by the root [`buf.yaml`](buf.yaml) — the file is not copied anywhere.
+`buf generate` produces the Go code for all three modules (`protos/`, `test/`,
+`example/proto`).
+
+### In your project
+
+`protoc-gen-go-errors/options.proto` is published to the
+[Buf Schema Registry](https://buf.build) as a module, so you don't need to
+copy it into your repo. Add it as a dependency in your `buf.yaml`:
+
+```yaml
+# buf.yaml
+version: v2
+modules:
+  - path: proto
+deps:
+  - buf.build/varunbpatil-oss/protoc-gen-go-errors
+```
+
+then run `buf dep update` and import it from your protos. The file's path
+within the module mirrors this repo, so the import is:
+
+```proto
+import "protoc-gen-go-errors/options.proto";
+
+message CreateUserError {
+    option (errors.display) = "could not create user: {cause}";
+    string cause = 1;
+}
+```
+
+Because `options.proto` declares
+`option go_package = "github.com/varunbpatil/protoc-gen-go-errors/errors"`,
+your Go module also needs the plugin as a dependency so the generated
+`options.pb.go` compiles:
+
+```sh
+go get github.com/varunbpatil/protoc-gen-go-errors@latest
+```
 
 For the example above, you would define errors like this:
 ```proto
@@ -201,7 +252,7 @@ message DependenciesNotMetError {
 
 message OtherError {
     option (errors.display) = "{message}";
-    string message = 1
+    string message = 1;
 }
 ```
 
@@ -226,12 +277,33 @@ message NotFoundError {
 ## What code is generated?
 The `protoc-gen-go` plugin takes care of generating the Go structs.
 The `protoc-gen-go-errors` plugin generates the `Error()` and `Unwrap()`
-methods that converts those Go structs into valid Go errors.
+methods that convert those Go structs into valid Go errors. For sum errors, it
+also generates a `From<LeafName>()` constructor for each leaf error that can be
+wrapped.
 
 ## Show me a full example
 The [example](example/) directory contains a sample Go project with errors generated
 using this plugin. It shows how you can install and use the `protoc-gen-go-errors`
 plugin.
+
+## Development
+This repository uses [mise](https://mise.jdx.dev) to manage its toolchain
+(Go, buf, protoc-gen-go, golangci-lint). Everything is defined in the root
+[`mise.toml`](mise.toml):
+
+```sh
+mise trust        # first time only
+mise install      # install the pinned tools
+mise run generate # regenerate protos/, test/ and example/ generated code
+mise run test     # run all tests (root and example modules)
+mise run lint     # run golangci-lint
+mise run publish  # push the protos module to the BSR (create the org and module on buf.build once first)
+```
+
+`mise run generate` builds `protoc-gen-go-errors` from the current source tree
+before running buf, so the generated code always matches the checked-in
+generator. CI runs the same commands — any drift in generated code fails the
+build.
 
 ## Inspired by
 * [thiserror](https://docs.rs/thiserror/latest/thiserror/) crate for Rust.
