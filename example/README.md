@@ -9,7 +9,7 @@ and `protoc-gen-go-errors` installed in your `PATH`.
 
 To install `protoc-gen-go-errors`, you can run:
 ```sh
-go install github.com/varunbpatil/protoc-gen-go-errors@latest
+go install github.com/varunbpatil/protoc-gen-go-errors@v0.1.0
 ```
 
 Inside this repository, `options.proto` is defined exactly once at

@@ -198,7 +198,7 @@ version: v2
 modules:
   - path: proto
 deps:
-  - buf.build/varunbpatil-oss/protoc-gen-go-errors
+  - buf.build/varunbpatil-oss/protoc-gen-go-errors@v0.1.0
 ```
 
 then run `buf dep update` and import it from your protos. The file's path
@@ -219,7 +219,7 @@ your Go module also needs the plugin as a dependency so the generated
 `options.pb.go` compiles:
 
 ```sh
-go get github.com/varunbpatil/protoc-gen-go-errors@latest
+go get github.com/varunbpatil/protoc-gen-go-errors@v0.1.0
 ```
 
 For the example above, you would define errors like this:
