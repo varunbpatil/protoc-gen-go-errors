@@ -22,8 +22,9 @@ const (
 )
 
 // WrapperError lives in its own file so that the generated code for this file
-// contains no leaf errors. It guards against a regression where a file that
-// only contains sum errors imports "fmt" without using it.
+// contains no leaf errors. It guards against a regression where a sum-only
+// file's imports are driven by usage alone: "fmt" is used by From()'s panic
+// message and google.golang.org/protobuf/proto by From()'s glue interface.
 type WrapperError struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Kind:

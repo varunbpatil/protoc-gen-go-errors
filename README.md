@@ -147,7 +147,7 @@ func (db *DB) CreateUser(ctx context.Context, r *CreateUserRequest) Result[*Crea
     if err := checkPreconditions(); err != nil {
 -        return fmt.Errorf("user cannot be created because preconditions were not satisfied: %w", err)
 +        return util.Err[*CreateUserResponse](
-+            new(userpb.UserRepositoryError).FromDependenciesNotMetError(err),
++            new(userpb.UserRepositoryError).From(err),
 +        )
     }
 
@@ -219,7 +219,7 @@ your Go module also needs the plugin as a dependency so the generated
 `options.pb.go` compiles:
 
 ```sh
-go get github.com/varunbpatil/protoc-gen-go-errors@v0.1.0
+go get github.com/varunbpatil/protoc-gen-go-errors@v0.1.1
 ```
 
 For the example above, you would define errors like this:
@@ -278,8 +278,14 @@ message NotFoundError {
 The `protoc-gen-go` plugin takes care of generating the Go structs.
 The `protoc-gen-go-errors` plugin generates the `Error()` and `Unwrap()`
 methods that convert those Go structs into valid Go errors. For sum errors, it
-also generates a `From<LeafName>()` constructor for each leaf error that can be
-wrapped.
+also generates a uniform `From()` constructor that wraps any of the sum error's
+leaf errors, plus a typed `From<LeafName>()` constructor for each individual
+leaf.
+
+`From()` is compile-time checked: its argument must be one of the sum error's
+own leaf errors (`new(UserRepositoryError).From(configErr)`), so wrapping a
+leaf of a different sum error is a compile error rather than a silent runtime
+failure.
 
 ## Show me a full example
 The [example](example/) directory contains a sample Go project with errors generated

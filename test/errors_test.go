@@ -102,3 +102,41 @@ func TestUnwrapNilCause(t *testing.T) {
 	var iErrUnwrapped *errorspb.IOError
 	require.False(t, errors.As(aErr, &iErrUnwrapped))
 }
+
+func TestApplicationErrorFrom(t *testing.T) {
+	t.Parallel()
+
+	// From() wraps any of the sum error's own leaf errors. Only those leaves
+	// satisfy the generated glue interface, so passing a leaf of a different
+	// sum error is rejected at compile time.
+	cErr := &errorspb.ConfigError{
+		Key:     "host",
+		Value:   "localhost",
+		Message: "the provided host is invalid",
+	}
+	aErr := new(errorspb.ApplicationError).From(cErr)
+	require.Equal(t, "invalid config: host=localhost", aErr.Error())
+
+	var cErrUnwrapped *errorspb.ConfigError
+	require.ErrorAs(t, aErr, &cErrUnwrapped)
+	require.Equal(t, cErr, cErrUnwrapped)
+
+	iErr := &errorspb.IOError{
+		Path:  "file.txt",
+		Cause: &errorspb.NotFoundError{Entity: "file"},
+	}
+	aErr = new(errorspb.ApplicationError).From(iErr)
+	require.Equal(t, "could not read file.txt: not found: file", aErr.Error())
+
+	var iErrUnwrapped *errorspb.IOError
+	require.ErrorAs(t, aErr, &iErrUnwrapped)
+	require.Equal(t, iErr, iErrUnwrapped)
+
+	oErr := &errorspb.OtherError{Message: "something went wrong"}
+	aErr = new(errorspb.ApplicationError).From(oErr)
+	require.Equal(t, "something went wrong", aErr.Error())
+
+	var oErrUnwrapped *errorspb.OtherError
+	require.ErrorAs(t, aErr, &oErrUnwrapped)
+	require.Equal(t, oErr, oErrUnwrapped)
+}

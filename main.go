@@ -89,33 +89,50 @@ func (m *errorsModule) processFile(file pgs.File) {
 func (m *errorsModule) generateFileContent(file pgs.File, errorMessages []pgs.Message) string {
 	var content strings.Builder
 
-	// Only leaf errors use fmt, so a file containing nothing but sum errors must
-	// not import it.
-	usesFmt := false
+	// Every error message generates code that uses fmt: leaf errors via
+	// Error()'s fmt.Sprintf and sum errors via From()'s panic message. The
+	// google.golang.org/protobuf/proto package is only imported when the file
+	// contains sum errors, whose From() glue interface embeds proto.Message.
+	usesFmt := len(errorMessages) > 0
+	usesProto := false
 	for _, msg := range errorMessages {
-		if m.isLeafError(msg) {
-			usesFmt = true
+		if !m.isLeafError(msg) {
+			usesProto = true
 			break
 		}
+	}
+
+	var imports []string
+	if usesFmt {
+		imports = append(imports, "fmt")
+	}
+	if usesProto {
+		imports = append(imports, "google.golang.org/protobuf/proto")
 	}
 
 	// File header
 	headerData := struct {
 		PackageName string
-		UsesFmt     bool
+		Imports     []string
 	}{
 		PackageName: m.ctx.PackageName(file).String(),
-		UsesFmt:     usesFmt,
+		Imports:     imports,
 	}
 
 	if err := headerTmpl.Execute(&content, headerData); err != nil {
 		m.Failf("Failed to execute header template: %v", err)
 	}
 
+	// Collect the marker method names that each leaf error defined in this file
+	// must implement. Every sum error (in any file of the same package) that
+	// wraps a leaf requires its own marker, so a leaf shared by several sums
+	// implements one marker method per sum.
+	leafMarkers := m.collectLeafMarkers(file)
+
 	// Generate methods for each error message
 	for _, msg := range errorMessages {
 		if m.isLeafError(msg) {
-			m.generateLeafError(&content, msg)
+			m.generateLeafError(&content, msg, leafMarkers[m.ctx.Name(msg).String()])
 			continue
 		}
 
@@ -129,7 +146,7 @@ func (m *errorsModule) generateFileContent(file pgs.File, errorMessages []pgs.Me
 	return content.String()
 }
 
-func (m *errorsModule) generateLeafError(content *strings.Builder, msg pgs.Message) {
+func (m *errorsModule) generateLeafError(content *strings.Builder, msg pgs.Message, markers []string) {
 	displayFormat, ok := m.getDisplayFormat(msg)
 	if !ok {
 		m.Failf("Missing (errors.display) option in message %s", msg.Name())
@@ -138,6 +155,7 @@ func (m *errorsModule) generateLeafError(content *strings.Builder, msg pgs.Messa
 	m.validateFieldReferencesOrFail(msg, displayFormat)
 
 	leafData := m.buildLeafErrorData(msg, displayFormat)
+	leafData.Markers = markers
 
 	if err := leafTmpl.Execute(content, leafData); err != nil {
 		m.Failf("Failed to execute leaf error template for %s: %v", msg.Name(), err)
@@ -157,11 +175,14 @@ type LeafErrorData struct {
 	DisplayFormat    string
 	FormatArgs       []string
 	UnwrappableField *FieldData
+	Markers          []string
 }
 
 type SumErrorData struct {
-	GoName string
-	Oneof  OneofData
+	GoName          string
+	MarkerInterface string
+	MarkerMethod    string
+	Oneof           OneofData
 }
 
 type OneofData struct {
@@ -218,8 +239,11 @@ func (m *errorsModule) buildSumErrorData(msg pgs.Message, oneof pgs.OneOf) SumEr
 		})
 	}
 
+	goName := m.ctx.Name(msg).String()
 	return SumErrorData{
-		GoName: m.ctx.Name(msg).String(),
+		GoName:          goName,
+		MarkerInterface: markerInterfaceName(goName),
+		MarkerMethod:    markerMethodName(goName),
 		Oneof: OneofData{
 			GoName: m.ctx.Name(oneof).String(),
 			Fields: fields,
@@ -240,6 +264,56 @@ func (m *errorsModule) isLeafError(msg pgs.Message) bool {
 		}
 	}
 	return true
+}
+
+// collectLeafMarkers returns, for each leaf error message defined in file, the
+// marker method names of every sum error in the same package that wraps it.
+// The From() constructor of a sum error is typed against an unexported
+// interface that only its own leaves can satisfy; each such interface requires
+// a uniquely named marker method on the leaf so that a leaf shared by several
+// sums can satisfy them all.
+func (m *errorsModule) collectLeafMarkers(file pgs.File) map[string][]string {
+	markers := map[string][]string{}
+	for _, pkgFile := range file.Package().Files() {
+		for _, pkgMsg := range pkgFile.AllMessages() {
+			if pkgMsg.IsMapEntry() || !m.isErrorMessage(pkgMsg) || m.isLeafError(pkgMsg) {
+				continue
+			}
+			oneofs := pkgMsg.OneOfs()
+			if len(oneofs) != 1 {
+				continue
+			}
+			sumMarker := markerMethodName(m.ctx.Name(pkgMsg).String())
+			for _, field := range oneofs[0].Fields() {
+				msgType := field.Type().Embed()
+				if msgType == nil || !strings.HasSuffix(m.ctx.Name(msgType).String(), errorSuffix) {
+					continue
+				}
+				if msgType.File().Name() != file.Name() {
+					continue
+				}
+				goName := m.ctx.Name(msgType).String()
+				markers[goName] = append(markers[goName], sumMarker)
+			}
+		}
+	}
+	return markers
+}
+
+// markerInterfaceName returns the unexported interface type that From() is
+// typed against for a sum error. Only the sum's own leaves (which implement
+// its marker method) satisfy it, so the compiler rejects leaves of other sum
+// errors at the call site.
+func markerInterfaceName(goName string) string {
+	return "from" + goName
+}
+
+// markerMethodName returns the per-sum marker method that each of a sum
+// error's leaves must implement. The sum's Go name is embedded in the method
+// name so that a leaf shared by several sums can implement several markers
+// without collision.
+func markerMethodName(goName string) string {
+	return strings.ToLower(goName[:1]) + goName[1:] + "Marker"
 }
 
 func (m *errorsModule) getDisplayFormat(msg pgs.Message) (string, bool) {
@@ -356,9 +430,13 @@ func toPrintfFormat(format string) string {
 const fileHeaderTemplate = `
 // Code generated by protoc-gen-go-errors. DO NOT EDIT.
 package {{ .PackageName }}
-{{- if .UsesFmt }}
+{{- if .Imports }}
 
-import "fmt"
+import (
+{{- range .Imports }}
+	"{{ . }}"
+{{- end }}
+)
 {{- end }}
 `
 
@@ -375,6 +453,10 @@ func (e *{{ .GoName }}) Unwrap() error {
 	{{- end }}
 	return nil
 }
+{{- range .Markers }}
+
+func (*{{ $.GoName }}) {{ . }}() {}
+{{- end }}
 `
 
 const sumErrorTemplate = `
@@ -399,6 +481,27 @@ func (e *{{ .GoName }}) Unwrap() error {
 	{{- end }}
 	}
 	return nil
+}
+
+type {{ .MarkerInterface }} interface {
+	error
+	proto.Message
+	{{ .MarkerMethod }}()
+}
+
+func (e *{{ .GoName }}) From(leaf {{ .MarkerInterface }}) *{{ .GoName }} {
+	switch v := leaf.(type) {
+	{{- range $field := .Oneof.Fields }}
+	{{- if $field.Message }}
+	case *{{ $field.Message.GoName }}:
+		return &{{ $.GoName }}{Kind: &{{ $.GoName }}_{{ $field.GoName }}{
+			{{ $field.GoName }}: v,
+		}}
+	{{- end }}
+	{{- end }}
+	default:
+		panic(fmt.Sprintf("protoc-gen-go-errors: %T is not one of the error messages of {{ .GoName }}", leaf))
+	}
 }
 
 {{- range $field := .Oneof.Fields }}
